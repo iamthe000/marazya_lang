@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マラシア語 (Marazya) 検索辞典</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/sql-wasm.min.js"></script>
+    <style>
+        .word-card:hover { transform: translateY(-2px); }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <header class="mb-8 text-center">
+            <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight mb-2">マラシア語 検索辞典</h1>
+            <p class="text-slate-500">marazya.db フロントエンド検索システム</p>
+        </header>
+
+        <div class="bg-white rounded-2xl shadow-sm p-6 mb-8 border border-slate-100">
+            <div class="flex flex-col md:flex-row gap-4">
+                <div class="flex-1">
+                    <input type="text" id="searchInput" placeholder="単語、意味、備考などを検索..." 
+                        class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all">
+                </div>
+                <div class="w-full md:w-48">
+                    <select id="posFilter" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all">
+                        <option value="">すべての品詞</option>
+                    </select>
+                </div>
+            </div>
+            <div id="status" class="mt-3 text-sm text-amber-600 font-medium">データベースを読み込み中...</div>
+        </div>
+
+        <div id="wordList" class="space-y-4"></div>
+    </div>
+
+    <script>
+        let db = null;
+        let allWords = [];
+
+        const config = {
+            locateFile: filename => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/${filename}`
+        };
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            const statusEl = document.getElementById('status');
+            try {
+                const response = await fetch('./marazya.db');
+                if (!response.ok) throw new Error('marazya.db が見つからないか、読み込めません。');
+                
+                const arrayBuffer = await response.arrayBuffer();
+                const SQL = await initSqlJs(config);
+                
+                db = new SQL.Database(new Uint8Array(arrayBuffer));
+                
+                statusEl.textContent = 'データベースの読み込みに成功しました！';
+                statusEl.className = 'mt-3 text-sm text-green-600 font-medium';
+
+                loadInitialData();
+                setupFilters();
+                renderWords(allWords);
+
+                document.getElementById('searchInput').addEventListener('input', filterWords);
+                document.getElementById('posFilter').addEventListener('change', filterWords);
+
+            } catch (error) {
+                console.error(error);
+                statusEl.textContent = `エラー: ${error.message} (ローカルサーバーを起動してアクセスしてください)`;
+                statusEl.className = 'mt-3 text-sm text-red-600 font-medium';
+            }
+        });
+
+        function loadInitialData() {
+            const stmt = db.prepare("SELECT marazya, english, japanese, part_of_speech, notes FROM words ORDER BY marazya ASC");
+            while(stmt.step()) {
+                const row = stmt.getAsObject();
+                allWords.push(row);
+            }
+            stmt.free();
+        }
+
+        // 品詞フィルターの生成 (カンマ区切りを分解して個別にリスト化)
+        function setupFilters() {
+            const posFilter = document.getElementById('posFilter');
+            
+            // 全ての単語から品詞を取り出し、カンマで分割して平坦化(flatten)する
+            const allPosSet = new Set();
+            allWords.forEach(w => {
+                if (w.part_of_speech) {
+                    // 全角・半角カンマの両方に対応して分割
+                    w.part_of_speech.split(/,|、/).forEach(pos => {
+                        const trimmed = pos.trim();
+                        if (trimmed) allPosSet.add(trimmed);
+                    });
+                }
+            });
+
+            // アルファベット・五十音順にソートして選択肢を追加
+            Array.from(allPosSet).sort().forEach(pos => {
+                const option = document.createElement('option');
+                option.value = pos;
+                option.textContent = pos;
+                posFilter.appendChild(option);
+            });
+        }
+
+        // カンマ区切りの文字列を安全に分割して、バッジのHTML配列を返す関数
+        function createBadges(text, baseClass) {
+            if (!text) return '---';
+            // 半角・全角カンマで分割
+            return text.split(/,|、/)
+                .map(item => item.trim())
+                .filter(item => item.length > 0)
+                .map(item => `<span class="${baseClass}">${escapeHtml(item)}</span>`)
+                .join(' ');
+        }
+
+        // カンマ区切りの文字列を箇条書き（リスト）にする関数
+        function createList(text) {
+            if (!text) return '<span class="text-slate-400">---</span>';
+            const items = text.split(/,|、/).map(item => item.trim()).filter(item => item.length > 0);
+            if (items.length <= 1) return `<span class="text-slate-700">${escapeHtml(text)}</span>`;
+            
+            return `<ul class="list-disc list-inside space-y-0.5 text-slate-700">
+                ${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+            </ul>`;
+        }
+
+        function renderWords(words) {
+            const container = document.getElementById('wordList');
+            container.innerHTML = '';
+
+            if (words.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12 text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">
+                        該当する単語が見つかりませんでした。
+                    </div>`;
+                return;
+            }
+
+            words.forEach(word => {
+                const card = document.createElement('div');
+                card.className = "word-card bg-white p-6 rounded-2xl shadow-xs border border-slate-100 transition-all duration-200 flex flex-col gap-4";
+                
+                // 品詞をそれぞれ個別のバッジにする
+                const posBadges = word.part_of_speech 
+                    ? createBadges(word.part_of_speech, "px-2 py-0.5 text-xs font-semibold bg-indigo-50 text-indigo-600 rounded-md")
+                    : '';
+
+                // 和訳・英訳をそれぞれ綺麗なリスト（または単一テキスト）にする
+                const jaList = createList(word.japanese);
+                const enList = createList(word.english);
+
+                const formattedNotes = word.notes ? word.notes.replace(/\n/g, '<br>') : '';
+
+                card.innerHTML = `
+                    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                        <h2 class="text-2xl font-bold text-slate-900 tracking-tight">${escapeHtml(word.marazya)}</h2>
+                        <div class="flex flex-wrap gap-1">${posBadges}</div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100">
+                        <div>
+                            <span class="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1.5">日本語訳</span> 
+                            <div class="text-base font-medium">${jaList}</div>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1.5">English</span> 
+                            <div class="text-base font-medium text-slate-600">${enList}</div>
+                        </div>
+                    </div>
+                    ${word.notes ? `
+                    <div class="mt-1">
+                        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-1.5">備考 / 設定</span>
+                        <p class="text-sm text-slate-600 bg-white border border-slate-100 p-3 rounded-xl leading-relaxed shadow-2xs">${formattedNotes}</p>
+                    </div>` : ''}
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function filterWords() {
+            const query = document.getElementById('searchInput').value.toLowerCase().trim();
+            const selectedPos = document.getElementById('posFilter').value;
+
+            const filtered = allWords.filter(word => {
+                // 品詞の絞り込み（カンマ区切りの中に選択された品詞が含まれているか）
+                if (selectedPos) {
+                    if (!word.part_of_speech) return false;
+                    const poses = word.part_of_speech.split(/,|、/).map(p => p.trim());
+                    if (!poses.includes(selectedPos)) return false;
+                }
+
+                if (!query) return true;
+                return (
+                    (word.marazya && word.marazya.toLowerCase().includes(query)) ||
+                    (word.japanese && word.japanese.toLowerCase().includes(query)) ||
+                    (word.english && word.english.toLowerCase().includes(query)) ||
+                    (word.notes && word.notes.toLowerCase().includes(query))
+                );
+            });
+
+            renderWords(filtered);
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+</html>
