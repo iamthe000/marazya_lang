@@ -3,7 +3,7 @@ import os
 import re
 
 # ファイル名の設定
-MD_FILE_NAME = 'marazyalang.md'
+MD_FILE_NAME = 'マラシア語概論.md'
 DB_FILE_NAME = 'marazya.db'
 
 def parse_and_insert():
